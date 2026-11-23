@@ -44,6 +44,7 @@ a{color:var(--acc)}
 .brand{flex:1;font-weight:600;font-size:17px;color:#fff;line-height:1.2}
 .brand small{display:block;font-weight:400;font-size:12px;color:var(--rail-ink)}
 .who{display:flex;align-items:center;gap:10px;font-size:13px}
+.who button#upd .t{font-size:12px}@media (max-width:859px){.who button#upd .t{display:none}}
 .who button{background:transparent;border:1px solid color-mix(in srgb,var(--rail-ink) 40%,transparent);color:var(--rail-ink);border-radius:8px;padding:4px 10px;cursor:pointer}
 #nav{order:3;width:100%;display:flex;gap:6px;overflow-x:auto;padding-bottom:2px}
 #nav button{flex:0 0 auto;padding:7px 14px;border:0;border-radius:999px;background:transparent;color:var(--rail-ink);cursor:pointer;font-weight:500}
@@ -142,10 +143,11 @@ dialog .row2{justify-content:flex-end}
 <div id="app" hidden>
   <header class="rail">
     <div class="brand">Nearby admin<small>KCST Media Technology</small></div>
-    <div class="who"><span id="who"></span><button id="out" type="button">Sign out</button></div>
+    <div class="who"><button id="upd" type="button" title="Refresh now">↻ <span class="t"></span></button><span id="who"></span><button id="out" type="button">Sign out</button></div>
     <nav id="nav" aria-label="Sections">
       <button data-v="overview">Overview</button>
       <button data-v="places">Places</button>
+      <button data-v="users">Users</button>
       <button data-v="reviews">Reviews</button>
       <button data-v="cache">Map cache</button>
     </nav>
@@ -156,7 +158,19 @@ dialog .row2{justify-content:flex-end}
 <dialog id="dlg">
   <h3 id="dt"></h3>
   <p id="dm"></p>
+  <label id="dx" hidden style="display:flex;gap:8px;align-items:flex-start;margin:-6px 0 16px;font-size:14px"><input type="checkbox" id="dxc" style="margin-top:4px"><span id="dxt"></span></label>
   <div class="row2"><button class="btn ghost" id="dno" type="button">Cancel</button><button class="btn solid-danger" id="dok" type="button"></button></div>
+</dialog>
+<dialog id="udlg">
+  <form id="uf">
+    <h3 id="utitle">Add user</h3>
+    <label class="field">Name<input id="uname" maxlength="60" required></label>
+    <label class="field">Mobile number<input id="umob" inputmode="numeric" placeholder="Digits only" required></label>
+    <label class="field"><span id="upwl">Password</span><input id="upw" type="text" autocomplete="off" placeholder=""></label>
+    <p class="note" id="unote"></p>
+    <div class="err" id="uerr" role="alert"></div>
+    <div class="row2" style="justify-content:flex-end;margin-top:6px"><button class="btn ghost" id="uno" type="button">Cancel</button><button class="btn" id="usave" type="submit">Save</button></div>
+  </form>
 </dialog>
 <dialog id="edlg">
   <form id="ef">
@@ -245,16 +259,27 @@ $("#nav").onclick=e=>{const b=e.target.closest("button");if(b)show(b.dataset.v)}
 function show(v){
   view=v;
   document.querySelectorAll("#nav button").forEach(b=>{if(b.dataset.v===v)b.setAttribute("aria-current","page");else b.removeAttribute("aria-current")});
-  ({overview:rOverview,places:rPlaces,reviews:rReviews,cache:rCache})[v]();
+  ({overview:rOverview,places:rPlaces,users:rUsers,reviews:rReviews,cache:rCache})[v]();
   window.scrollTo(0,0)}
 
-async function loadAll(){
+async function fetchData(){
   const [pl,rv,np,nr,no]=await Promise.all([
     get("places?select=*&order=created_at.desc&limit=2000"),
     get("place_reviews?select=*&order=created_at.desc&limit=2000"),
     count("places"),count("place_reviews"),count("osm_places")]);
   D.places=pl||[];D.reviews=rv||[];D.nPlaces=np==null?D.places.length:np;D.nReviews=nr==null?D.reviews.length:nr;D.nOsm=no;
-  show(view)}
+  $("#upd .t").textContent="Updated "+new Date().toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}
+async function loadAll(){await fetchData();show(view)}
+async function quietRefresh(){
+  if(document.hidden||!S||$("#app").hidden||document.querySelector("dialog[open]"))return;
+  try{
+    if(view==="cache"){loadCacheStats();loadCacheRows();return}
+    if(view==="users"){await loadUsers();return}
+    await fetchData();
+    if(view==="overview")rOverview();else if(view==="places")drawPlaces();else if(view==="reviews")drawReviews()
+  }catch(e){}}
+setInterval(quietRefresh,30000);
+$("#upd").onclick=async()=>{await quietRefresh();toast("Refreshed")};
 
 /* ---------- overview ---------- */
 function rOverview(){
@@ -354,19 +379,30 @@ function drawReviews(){
   const mr=$("#mr");if(mr)mr.onclick=()=>{R.lim+=100;drawReviews()}}
 
 /* ---------- map cache ---------- */
-async function rCache(){
+const C={q:"",cat:"",lim:100};let CR=[];
+function rCache(){
   $("#main").innerHTML=`
-    <h1 class="pt">Map cache</h1><p class="sub">Places from OpenStreetMap that Nearby saved automatically. They refill when people search.</p>
-    <div class="panel pad" id="cb"><div class="empty">Loading…</div></div>`;
+    <h1 class="pt">Map cache</h1><p class="sub">Places from OpenStreetMap that Nearby saves automatically while people search. New ones appear here by themselves.</p>
+    <div class="panel pad" id="cb"><div class="empty">Loading…</div></div>
+    <h2 class="st" style="margin:26px 0 12px">Saved places</h2>
+    <div class="bar">
+      <input id="cq" type="search" placeholder="Search by name" value="${esc(C.q)}" aria-label="Search saved places">
+      <select id="cc" aria-label="Category"><option value="">All categories</option>${Object.keys(CATS).map(k=>`<option value="${k}"${C.cat===k?" selected":""}>${catLabel(k)}</option>`).join("")}</select>
+    </div>
+    <div class="panel"><div id="ct"><div class="empty">Loading…</div></div></div>`;
+  let t;
+  $("#cq").oninput=e=>{C.q=e.target.value;C.lim=100;clearTimeout(t);t=setTimeout(loadCacheRows,300)};
+  $("#cc").onchange=e=>{C.cat=e.target.value;C.lim=100;loadCacheRows()};
+  loadCacheStats();loadCacheRows()}
+async function loadCacheStats(){
   const keys=Object.keys(CATS);
   const [total,oldest,newest,...per]=await Promise.all([
     count("osm_places"),
     get("osm_places?select=updated_at&order=updated_at.asc&limit=1"),
     get("osm_places?select=updated_at&order=updated_at.desc&limit=1"),
     ...keys.map(k=>count("osm_places","&category=eq."+k))]);
-  if(view!=="cache")return;
-  const box=$("#cb");
-  if(total==null){box.innerHTML=`<p class="warn">The map cache table was not found. Run the map cache SQL in Supabase first.</p>`;return}
+  const box=$("#cb");if(view!=="cache"||!box)return;
+  if(total==null){box.innerHTML=`<p class="warn" style="margin:0">The map cache table was not found. Run the map cache SQL in Supabase first.</p>`;return}
   D.nOsm=total;
   const rows=keys.map((k,i)=>[k,per[i]||0]).filter(x=>x[1]).sort((a,b)=>b[1]-a[1]),max=rows.length?rows[0][1]:1;
   box.innerHTML=`
@@ -383,8 +419,89 @@ async function rCache(){
       <button class="btn danger" id="pa" type="button">Clear everything</button>
     </div>
     <p class="note">Clearing the cache is safe. People still see live results from OpenStreetMap, and the cache fills up again as they search.</p>`;
-  $("#pg").onclick=()=>{const d=+$("#pd").value;ask("Delete old saved places?",`Saved places not refreshed in the last ${d} days will be removed.`,"Delete",async()=>{const r=await adm("admin_purge_osm",{p_days:d});if(r.error)throw new Error(r.error);toast(`Deleted ${r.deleted||0} places`);rCache()})};
-  $("#pa").onclick=()=>ask("Clear the whole map cache?","All saved OpenStreetMap places will be removed. This can't be undone.","Clear everything",async()=>{const r=await adm("admin_purge_osm",{p_days:0});if(r.error)throw new Error(r.error);toast(`Deleted ${r.deleted||0} places`);rCache()})}
+  const done=n=>{toast(`Deleted ${n||0} places`);loadCacheStats();loadCacheRows()};
+  $("#pg").onclick=()=>{const d=+$("#pd").value;ask("Delete old saved places?",`Saved places not refreshed in the last ${d} days will be removed.`,"Delete",async()=>{const r=await adm("admin_purge_osm",{p_days:d});if(r.error)throw new Error(r.error);done(r.deleted)})};
+  $("#pa").onclick=()=>ask("Clear the whole map cache?","All saved OpenStreetMap places will be removed. This can't be undone.","Clear everything",async()=>{const r=await adm("admin_purge_osm",{p_days:0});if(r.error)throw new Error(r.error);done(r.deleted)})}
+async function loadCacheRows(){
+  if(!$("#ct"))return;
+  let f="";if(C.cat)f+="&category=eq."+C.cat;
+  const q=C.q.trim().replace(/[*,()&%]/g," ").trim();if(q)f+="&name=ilike."+encodeURIComponent("*"+q+"*");
+  const [rows,total]=await Promise.all([get(`osm_places?select=*&order=updated_at.desc&limit=${C.lim}${f}`),count("osm_places",f)]);
+  const box=$("#ct");if(view!=="cache"||!box)return;
+  if(rows==null){box.innerHTML=`<div class="empty">The map cache table was not found.</div>`;return}
+  CR=rows;
+  box.innerHTML=rows.length?`
+    <div class="scroll"><table>
+      <thead><tr><th>Place</th><th>Category</th><th>Phone</th><th>Location</th><th>Saved</th><th></th></tr></thead>
+      <tbody>${rows.map(r=>{const t=r.tags||{};return `<tr>
+        <td><div class="nm"><div class="ph">${CATS[r.category]?CATS[r.category][0]:"📍"}</div><div style="min-width:0"><b>${esc(r.name||"Unnamed")}</b><small>${esc(r.type||"")}</small></div></div></td>
+        <td><span class="chip">${catLabel(r.category)}</span></td>
+        <td>${esc(t.phone||t["contact:phone"]||"")}</td>
+        <td><a href="https://www.google.com/maps?q=${r.lat},${r.lon}" target="_blank" rel="noopener">${(+r.lat).toFixed(4)}, ${(+r.lon).toFixed(4)}</a></td>
+        <td>${fmtDate(r.updated_at)}</td>
+        <td class="act"><button class="btn danger sm" data-delc="${esc(r.place_key)}" type="button">Delete</button></td>
+      </tr>`}).join("")}</tbody></table></div>
+    <div class="more"><span class="count">Showing ${rows.length} of ${total==null?rows.length:total}</span>${total!=null&&total>rows.length?` <button class="btn ghost sm" id="mc" type="button" style="margin-left:10px">Show more</button>`:""}</div>`
+    :`<div class="empty">${C.q||C.cat?"No saved places match.":"Nothing saved yet. Places appear here after people search in Nearby."}</div>`;
+  const mc=$("#mc");if(mc)mc.onclick=()=>{C.lim+=100;loadCacheRows()}}
+
+/* ---------- users ---------- */
+let UL=null,U={q:""},uEdit=null;
+async function rUsers(){
+  $("#main").innerHTML=`
+    <h1 class="pt">Users</h1><p class="sub">People who signed up to Nearby. Passwords are never shown.</p>
+    <div class="bar"><input id="uq" type="search" placeholder="Search name or mobile" value="${esc(U.q)}" aria-label="Search users"><button class="btn" id="uadd" type="button">Add user</button></div>
+    <div class="panel"><div id="ut"><div class="empty">Loading…</div></div></div>`;
+  $("#uq").oninput=e=>{U.q=e.target.value;drawUsers()};
+  $("#uadd").onclick=()=>openUser(null);
+  await loadUsers()}
+async function loadUsers(){
+  try{
+    const r=await adm("admin_list_users");
+    if(r&&r.error)throw new Error(r.error);
+    UL=r||[];if(view==="users")drawUsers()
+  }catch(e){
+    UL=null;
+    if(view==="users")$("#ut").innerHTML=`<div class="pad"><p class="warn" style="margin:0">${esc(/admin_list_users|schema cache|Could not find/i.test(e.message)?"The user functions are not set up in Supabase yet. Run the users SQL first.":e.message)}</p></div>`}}
+function drawUsers(){
+  if(!UL)return;
+  const q=U.q.trim().toLowerCase(),list=UL.filter(u=>!q||[u.name,u.mobile].some(x=>String(x||"").toLowerCase().includes(q)));
+  $("#ut").innerHTML=list.length?`
+    <div class="scroll"><table>
+      <thead><tr><th>Name</th><th>Mobile</th><th>Places added</th><th>Joined</th><th></th></tr></thead>
+      <tbody>${list.map(u=>`<tr>
+        <td><div class="nm"><div class="ph">${esc((u.name||"?").trim().charAt(0).toUpperCase())}</div><div style="min-width:0"><b>${esc(u.name||"")}</b></div></div></td>
+        <td>+${esc(u.mobile)}</td>
+        <td>${u.places||0}</td>
+        <td>${fmtDate(u.created)}</td>
+        <td class="act"><button class="btn ghost sm" data-editu="${esc(u.id)}" type="button">Edit</button><button class="btn danger sm" data-delu="${esc(u.id)}" type="button">Delete</button></td>
+      </tr>`).join("")}</tbody></table></div>
+    <div class="more"><span class="count">${list.length} user${list.length>1?"s":""}</span></div>`
+    :`<div class="empty">${UL.length?"No users match your search.":"No users yet."}</div>`}
+function openUser(u){
+  uEdit=u;
+  $("#utitle").textContent=u?"Edit user":"Add user";
+  $("#uname").value=u?u.name||"":"";$("#umob").value=u?u.mobile||"":"";$("#upw").value="";
+  $("#upwl").textContent=u?"New password (optional)":"Password";
+  $("#upw").required=!u;
+  $("#unote").textContent=u?"Leave the password empty to keep it. If you change the mobile number, set a new password too, because login depends on both.":"Share the password with the user. They can sign in with this mobile number and password.";
+  $("#uerr").textContent="";$("#usave").disabled=false;$("#udlg").showModal()}
+$("#uno").onclick=()=>$("#udlg").close();
+$("#uf").onsubmit=async e=>{
+  e.preventDefault();
+  const err=$("#uerr"),b=$("#usave"),name=$("#uname").value.trim(),mob=$("#umob").value.replace(/[\s\-+()]/g,""),pw=$("#upw").value;err.textContent="";
+  if(!name){err.textContent="Enter a name";return}
+  if(!/^\d{7,15}$/.test(mob)){err.textContent="Enter the mobile number, digits only";return}
+  if(!uEdit&&pw.length<4){err.textContent="Password must be at least 4 characters";return}
+  if(uEdit&&pw&&pw.length<4){err.textContent="Password must be at least 4 characters";return}
+  if(uEdit&&mob!==String(uEdit.mobile)&&!pw){err.textContent="Set a new password, because changing the mobile number changes the login";return}
+  b.disabled=true;
+  try{
+    const h=pw?await sha("swipe:"+mob+":"+pw):"";
+    const r=uEdit?await adm("admin_edit_user",{p_id:String(uEdit.id),p_user_mobile:mob,p_name:name,p_user_hash:h}):await adm("admin_add_user",{p_user_mobile:mob,p_name:name,p_user_hash:h});
+    if(r&&r.error)throw new Error(r.error);
+    $("#udlg").close();toast(uEdit?"User updated":"User added");await loadUsers()
+  }catch(x){err.textContent=/admin_(add|edit)_user|schema cache|Could not find/i.test(x.message)?"The user functions are not set up in Supabase yet. Run the users SQL first.":x.message;b.disabled=false}};
 
 /* ---------- edit place ---------- */
 let editing=null,eImg=null,eRemove=false;
@@ -430,14 +547,31 @@ $("#ef").onsubmit=async e=>{
   }catch(x){err.textContent=/admin_update_place|schema cache|Could not find/i.test(x.message)?"The edit function is not set up in Supabase yet. Run the edit SQL first.":x.message;b.disabled=false}};
 
 /* ---------- delete actions ---------- */
-function ask(title,msg,label,fn){
+function ask(title,msg,label,fn,extra){
   $("#dt").textContent=title;$("#dm").textContent=msg;$("#dok").textContent=label;
+  $("#dx").hidden=!extra;$("#dxc").checked=false;if(extra)$("#dxt").textContent=extra;
   const d=$("#dlg"),ok=$("#dok");ok.disabled=false;
   ok.onclick=async()=>{ok.disabled=true;try{await fn();d.close()}catch(e){toast(e.message,true);ok.disabled=false}};
   $("#dno").onclick=()=>d.close();d.showModal()}
 $("#main").onclick=e=>{
   const dp=e.target.closest("[data-delp]"),dr=e.target.closest("[data-delr]"),ep=e.target.closest("[data-editp]");
   if(ep){const p=D.places.find(x=>String(x.id)===ep.dataset.editp);if(p)editPlace(p);return}
+  const dc=e.target.closest("[data-delc]");
+  if(dc){
+    const r=CR.find(x=>x.place_key===dc.dataset.delc);if(!r)return;
+    ask("Delete this saved place?",`“${r.name||"Unnamed"}” will be removed from the cache. It can come back the next time someone searches that area.`,"Delete",async()=>{
+      const x=await adm("admin_delete_osm_place",{p_key:r.place_key});if(x&&x.error)throw new Error(x.error);
+      toast("Deleted");loadCacheStats();loadCacheRows()});return}
+  const eu=e.target.closest("[data-editu]"),du=e.target.closest("[data-delu]");
+  if(eu){const u=(UL||[]).find(x=>String(x.id)===eu.dataset.editu);if(u)openUser(u);return}
+  if(du){
+    const u=(UL||[]).find(x=>String(x.id)===du.dataset.delu);if(!u)return;
+    ask("Delete this user?",`${u.name||"This user"} (+${u.mobile}) will be removed and can no longer sign in.`,"Delete user",async()=>{
+      const wipe=$("#dxc").checked;
+      const r=await adm("admin_delete_user",{p_id:String(u.id),p_delete_data:wipe});if(r&&r.error)throw new Error(r.error);
+      if(wipe)D.places.filter(p=>String(p.user_id)===String(u.id)).forEach(p=>{const ip=(p.image_url||"").split("/object/public/media/")[1];if(ip)fetch(`${URL_}/storage/v1/object/media/${ip}`,{method:"DELETE",headers:{apikey:KEY}}).catch(()=>{})});
+      toast("User deleted");await loadUsers();if(wipe)loadAll()
+    },"Also delete their places and reviews");return}
   if(dp){
     const p=D.places.find(x=>String(x.id)===dp.dataset.delp);if(!p)return;
     ask("Delete this place?",`“${p.name}” and its reviews and photo will be removed. This can't be undone.`,"Delete place",async()=>{
